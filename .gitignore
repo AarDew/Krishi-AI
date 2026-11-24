@@ -1,0 +1,27 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+.DS_Store
+
+# Virtual Environment
+env/
+venv/
+.venv
+project-env/
+
+# Environment Variables
+.env
+
+# IDE specific files
+.idea/
+.vscode/
+
+# Logs
+*.log
+
+# Node.js dependencies
+node_modules/
+
+# Distribution files
+dist/
