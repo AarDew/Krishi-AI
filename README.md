@@ -174,11 +174,6 @@ The dataset includes the following information:
 
 This project is licensed under the MIT License - see the LICENSE.md file for details
 
-## Contact
-
-Your Name - Pratik Gautam
-Project Link: [https://github.com/PratikGautam-dev/Hackphaisa]
-
 ## Acknowledgments
 
 - Ministry of Agriculture, Government of India
