@@ -1,6 +1,5 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from pydantic import BaseModel, field_validator  # Updated import
 from sqlalchemy import create_engine, Column, String, Float
 from sqlalchemy.ext.declarative import declarative_base
@@ -9,6 +8,8 @@ import bcrypt
 import uuid
 import requests
 import os
+import logging
+from pathlib import Path
 import pandas as pd
 import numpy as np
 from datetime import datetime, timedelta
@@ -17,19 +18,26 @@ import plotly.graph_objects as go
 from dotenv import load_dotenv
 import aiohttp
 from aiohttp import ClientTimeout
-from crop_advisor import get_crop_schedule
-from PIL import Image
-import io
-import google.generativeai as genai
+from google import genai
 import asyncio
+import uvicorn
 from typing import Optional, List, Dict, Any  # Add type hints
 
-# First, drop the existing database file
-if os.path.exists("krishiai.db"):
-    os.remove("krishiai.db")
+PROJECT_DIR = Path(__file__).resolve().parent
+REPOSITORY_DIR = PROJECT_DIR.parent
+COMMODITY_DATA_PATH = PROJECT_DIR / "commodity_price.csv"
+CROP_DATA_PATH = PROJECT_DIR / "crop_data.csv"
+load_dotenv(REPOSITORY_DIR / ".env")
+logger = logging.getLogger(__name__)
+AGRICULTURE_PRICE_API_URL = os.getenv("AGRICULTURE_PRICE_API_URL")
+AGRICULTURE_PRICE_API_KEY = os.getenv("AGRICULTURE_PRICE_API_KEY")
 
 # Database setup
-DATABASE_URL = "sqlite:///./krishiai.db"
+DATABASE_PATH = Path(
+    os.getenv("KRISHIAI_DB_PATH", str(PROJECT_DIR / "krishiai.db"))
+).expanduser().resolve()
+DATABASE_PATH.parent.mkdir(parents=True, exist_ok=True)
+DATABASE_URL = f"sqlite:///{DATABASE_PATH.as_posix()}"
 engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
 SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
 Base = declarative_base()
@@ -78,25 +86,31 @@ class MarketListing(Base):
     status = Column(String, nullable=False, default="available")
     contact_number = Column(String, nullable=False)  # Added this field
 
-# Create all tables
-Base.metadata.create_all(bind=engine)
+def init_database():
+    Base.metadata.create_all(bind=engine)
+
+
+init_database()
 
 # FastAPI app
-app = FastAPI()
-
-# Middleware setup
+app = FastAPI(title="KrishiAI API")
+CORS_ORIGINS = [
+    origin.strip()
+    for origin in os.getenv("CORS_ORIGINS", "http://localhost:8501").split(",")
+    if origin.strip()
+]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
+    allow_origins=CORS_ORIGINS,
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-app.add_middleware(
-    TrustedHostMiddleware,
-    allowed_hosts=["*"]
-)
+
+@app.get("/health")
+async def health_check():
+    return {"status": "ok"}
 
 # Pydantic models
 class UserCreate(BaseModel):
@@ -112,6 +126,7 @@ class UserCreate(BaseModel):
 class LoginResponse(BaseModel):
     message: str
     token: str
+    farmer_id: Optional[str] = None
 
 class FarmerCreate(BaseModel):
     name: str
@@ -276,37 +291,38 @@ async def submit_farm_data(farmer: FarmerCreate, db: Session = Depends(get_db)):
 
 # Fetch state-wise crop prices
 def fetch_crop_prices(state):
-    try:
-        response = requests.get(f"https://api.realexample.com/crop-prices?state={state}", timeout=5, verify=False)
-        if response.status_code == 200:
-            return response.json()
-    except requests.RequestException as e:
-        print("Error fetching crop prices:", e)
-    return {}
+    if not AGRICULTURE_PRICE_API_URL:
+        raise RuntimeError("AGRICULTURE_PRICE_API_URL is not configured")
+
+    headers = {}
+    if AGRICULTURE_PRICE_API_KEY:
+        headers["Authorization"] = f"Bearer {AGRICULTURE_PRICE_API_KEY}"
+
+    response = requests.get(
+        AGRICULTURE_PRICE_API_URL,
+        params={"state": state},
+        headers=headers,
+        timeout=5,
+    )
+    response.raise_for_status()
+    return response.json()
 
 # Load and prepare dataset
 def prepare_model():
-    try:
-        # Read dataset
-        df = pd.read_csv('crop_data.csv')
-        print("Loading dataset...")
-        
-        if df.empty:
-            raise ValueError("Dataset is empty")
-            
-        # Convert column names to match expected format
-        df.columns = df.columns.str.strip()
-        
-        # Create dummy data if missing columns
-        if 'Season' not in df.columns:
-            df['Season'] = 'All Season'
-        if 'Production' not in df.columns:
-            df['Production'] = 1000
-            
-        return None, None, None, df  # We'll use direct DataFrame operations instead of ML model
-    except Exception as e:
-        print(f"Error in prepare_model: {str(e)}")
+    if not CROP_DATA_PATH.is_file():
+        logger.warning(
+            "Crop dataset not found at %s; data-backed crop modeling is unavailable",
+            CROP_DATA_PATH,
+        )
         return None, None, None, None
+
+    df = pd.read_csv(CROP_DATA_PATH)
+    if df.empty:
+        logger.warning("Crop dataset is empty at %s", CROP_DATA_PATH)
+        return None, None, None, None
+
+    df.columns = df.columns.str.strip()
+    return None, None, None, df
 
 model, state_encoder, crop_encoder, crop_data = prepare_model()
 
@@ -359,9 +375,7 @@ def get_season_for_crop(crop_name):
     return crop_seasons.get(crop_name, 'Unknown')
 
 # Load environment variables
-load_dotenv()
 OPENWEATHER_API_KEY = os.getenv("OPENWEATHER_API_KEY")
-AGRICULTURE_PRICE_API = "your-api-key"  # Get from data.gov.in or similar source
 
 async def get_weather_data(lat: float, lon: float):
     try:
@@ -373,7 +387,7 @@ async def get_weather_data(lat: float, lon: float):
                 "rainfall": 50.0
             }
             
-        url = f"http://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
+        url = f"https://api.openweathermap.org/data/2.5/weather?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
         async with aiohttp.ClientSession() as session:
             async with session.get(url) as response:
                 if response.status == 200:
@@ -430,7 +444,7 @@ async def get_weather_forecast(lat: float, lon: float, days: int = 180):  # Chan
 
         # For the actual API, we'll continue with 7-day forecast as OpenWeather free tier limitation
         timeout = ClientTimeout(total=10)
-        url = f"http://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
+        url = f"https://api.openweathermap.org/data/2.5/forecast?lat={lat}&lon={lon}&appid={OPENWEATHER_API_KEY}&units=metric"
         async with aiohttp.ClientSession(timeout=timeout) as session:
             async with session.get(url) as response:
                 if response.status == 200:
@@ -499,54 +513,10 @@ async def get_market_history(crop_name: str, days: int = 30):
 
 @app.post("/predict_crop/", response_model=CropPredictionResponse)
 async def predict_crop(data: CropPredictionRequest):
-    try:
-        # Get weather data
-        weather = await get_weather_data(data.latitude, data.longitude)
-        if not weather:
-            weather = {
-                "temperature": data.temperature,
-                "humidity": data.humidity,
-                "rainfall": data.rainfall
-            }
-
-        # Define crop suitability scores
-        crop_scores = [
-            {
-                "crop": "Rice",
-                "probability": "95%" if 25 <= weather["temperature"] <= 35 and weather["humidity"] >= 60 else "75%",
-                "price": await get_crop_price("Rice"),
-                "season": "Kharif",
-                "details": {"soil_type": "Clay loam", "water_needs": "High"}
-            },
-            {
-                "crop": "Wheat",
-                "probability": "90%" if 15 <= weather["temperature"] <= 25 else "70%",
-                "price": await get_crop_price("Wheat"),
-                "season": "Rabi",
-                "details": {"soil_type": "Loam", "water_needs": "Moderate"}
-            },
-            {
-                "crop": "Cotton",
-                "probability": "85%" if weather["temperature"] >= 25 else "65%",
-                "price": await get_crop_price("Cotton"),
-                "season": "Kharif",
-                "details": {"soil_type": "Black soil", "water_needs": "Moderate"}
-            },
-            {
-                "crop": "Sugarcane",
-                "probability": "80%" if weather["temperature"] >= 20 and weather["rainfall"] >= 100 else "60%",
-                "price": await get_crop_price("Sugarcane"),
-                "season": "Year-round",
-                "details": {"soil_type": "Well-drained", "water_needs": "High"}
-            }
-        ]
-
-        # Sort by probability
-        crop_scores.sort(key=lambda x: float(x["probability"].strip('%')), reverse=True)
-        return {"crop_suggestions": crop_scores}
-
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=503,
+        detail="Crop recommendations are unavailable because no crop dataset or trained model is installed.",
+    )
 
 @app.post("/detailed_analysis/", response_model=DetailedAnalysisResponse)
 async def get_detailed_analysis(data: DetailedAnalysisRequest):
@@ -691,7 +661,10 @@ async def get_schedule(data: CropScheduleRequest):
     schedule = get_crop_schedule(data.crop_name, data.state, data.season)
     if schedule:
         return {"schedule": schedule}
-    raise HTTPException(status_code=500, detail="Failed to generate crop schedule")
+    raise HTTPException(
+        status_code=503,
+        detail="Crop schedule generation is unavailable; check GEMINI_API_KEY and the AI provider.",
+    )
 
 @app.get("/get_farmers/")
 async def get_farmers(state: str = "", crop: str = "", db: Session = Depends(get_db)):
@@ -756,56 +729,33 @@ def get_season_score(params, current_season):
             return 1.0
         return 0.5
 
-from constants import CROP_DISEASES
+if __package__:
+    from .crop_advisor import get_crop_schedule
+    from .models.commodity import CommodityPrice, Base as CommodityBase
+    from .models.marketplace import MarketListing, Base as MarketplaceBase
+else:
+    from crop_advisor import get_crop_schedule
+    from models.commodity import CommodityPrice, Base as CommodityBase
+    from models.marketplace import MarketListing, Base as MarketplaceBase
 
 @app.post("/detect_disease/")
 async def detect_disease(file: UploadFile = File(...)):
-    try:
-        # Read and process the image
-        contents = await file.read()
-        image = Image.open(io.BytesIO(contents))
-        
-        # TODO: Add actual ML model for disease detection
-        # For now, return mock response
-        import random
-        crop = random.choice(list(CROP_DISEASES.keys()))
-        disease = random.choice(CROP_DISEASES[crop])
-        
-        treatments = {
-            "Bacterial leaf blight": "Apply streptomycin sulfate 90% and tetracycline hydrochloride 10% combination.",
-            "Brown spot": "Use fungicides containing hexaconazole or propiconazole.",
-            "Leaf blast": "Apply systemic fungicides like carbendazim or tricyclazole.",
-            "Yellow rust": "Spray propiconazole or tebuconazole fungicides.",
-            "Powdery mildew": "Apply sulfur-based fungicides.",
-            "Root rot": "Improve drainage and apply copper oxychloride.",
-        }
-        
-        return {
-            "disease": disease,
-            "confidence": round(random.uniform(0.7, 0.95), 2),
-            "treatment": treatments.get(disease, "Consult a local agricultural expert for treatment advice."),
-            "crop": crop
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+    raise HTTPException(
+        status_code=503,
+        detail="Disease detection is unavailable because no trained disease model is installed.",
+    )
 
 # Gemini AI integration
 # Load Gemini API key
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-print("🔍 Using GEMINI_API_KEY:", GEMINI_API_KEY)
-genai.configure(api_key=GEMINI_API_KEY)
-class ChatMessage(BaseModel):
-    message: str
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
+
+
 async def get_gemini_response(prompt: str) -> str:
-    try:
-        # Initialize Gemini
-        if not GEMINI_API_KEY:
-            return "Error: Gemini API key not configured"
-            
-        model = genai.GenerativeModel('gemini-2.5-flash')
-# Changed to correct model name
-        
-        context = """You are KrishiAI, an expert farming assistant. Provide detailed advice about:
+    if gemini_client is None:
+        raise RuntimeError("GEMINI_API_KEY is not configured")
+
+    context = """You are KrishiAI, an expert farming assistant. Provide detailed advice about:
         - Crop cultivation and management
         - Pest control and disease prevention
         - Soil health and fertilization
@@ -814,60 +764,60 @@ async def get_gemini_response(prompt: str) -> str:
         - Modern farming technologies
         
         Give practical, actionable advice in simple language.
-        """
-        
-        full_prompt = f"{context}\n\nQuestion: {prompt}\n\nAnswer:"
-        
-        response = model.generate_content(full_prompt)
-        return response.text
-        
-    except Exception as e:
-        print(f"Gemini API error: {str(e)}")  # Add logging
-        return f"I apologize, but I encountered an error: {str(e)}"
+    """
 
-# Fix the chat endpoint
+    full_prompt = f"{context}\n\nQuestion: {prompt}\n\nAnswer:"
+    response = gemini_client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=full_prompt,
+    )
+    if not response.text:
+        raise RuntimeError("Gemini returned an empty response")
+    return response.text
+
 @app.post("/chat/")
 async def chat_with_farmer(message: ChatMessage):
+    if gemini_client is None:
+        raise HTTPException(
+            status_code=503,
+            detail="AI chat is unavailable because GEMINI_API_KEY is not configured.",
+        )
     try:
         response = await get_gemini_response(message.message)
-        return {"reply": response}  # Changed 'response' to 'reply' to match frontend expectation
-    except Exception as e:
-        print(f"Chat error: {str(e)}")  # Add logging
-        raise HTTPException(status_code=500, detail=str(e))
-
-import pandas as pd
-from models.commodity import CommodityPrice, Base
+        return {"reply": response}
+    except Exception as exc:
+        logger.exception("Gemini chat request failed")
+        raise HTTPException(status_code=502, detail="Gemini request failed") from exc
 
 # Add after database setup
 def load_commodity_data():
-    try:
-        df = pd.read_csv('backend/commodity_price.csv')
-        df['Arrival_Date'] = pd.to_datetime(df['Arrival_Date'], format='%d/%m/%Y')
-        
-        # Create tables
-        Base.metadata.create_all(bind=engine)
-        
-        # Convert DataFrame to database records
-        db = SessionLocal()
-        for _, row in df.iterrows():
+    if not COMMODITY_DATA_PATH.is_file():
+        logger.warning("Commodity dataset not found at %s; skipping import", COMMODITY_DATA_PATH)
+        return
+
+    df = pd.read_csv(COMMODITY_DATA_PATH)
+    df["Arrival_Date"] = pd.to_datetime(df["Arrival_Date"], format="%d/%m/%Y")
+
+    CommodityBase.metadata.create_all(bind=engine)
+    with SessionLocal.begin() as db:
+        if db.query(CommodityPrice).first() is not None:
+            return
+
+        for row_number, (_, row) in enumerate(df.iterrows()):
             price = CommodityPrice(
-                id=f"{row['State']}_{row['District']}_{row['Commodity']}_{row['Arrival_Date']}",
-                state=row['State'],
-                district=row['District'],
-                market=row['Market'],
-                commodity=row['Commodity'],
-                variety=row['Variety'],
-                grade=row['Grade'],
-                arrival_date=row['Arrival_Date'],
-                min_price=row['Min_x0020_Price'],
-                max_price=row['Max_x0020_Price'],
-                modal_price=row['Modal_x0020_Price']
+                id=f"{row['State']}_{row['District']}_{row['Market']}_{row['Commodity']}_{row['Arrival_Date'].date()}_{row_number}",
+                state=row["State"],
+                district=row["District"],
+                market=row["Market"],
+                commodity=row["Commodity"],
+                variety=row["Variety"],
+                grade=row["Grade"],
+                arrival_date=row["Arrival_Date"].date(),
+                min_price=row["Min_x0020_Price"],
+                max_price=row["Max_x0020_Price"],
+                modal_price=row["Modal_x0020_Price"],
             )
             db.add(price)
-        db.commit()
-        db.close()
-    except Exception as e:
-        print(f"Error loading commodity data: {e}")
 
 # Add new endpoint
 @app.get("/commodity_prices/")
@@ -907,11 +857,10 @@ async def get_commodity_prices(
         ]
     }
 
-# Call this after app initialization
+# Import the dataset only when the commodity table is empty.
 load_commodity_data()
 
 # Add these imports at the top
-from models.marketplace import MarketListing, Base as MarketplaceBase
 import uuid
 from datetime import datetime
 from typing import Optional
@@ -1051,91 +1000,5 @@ async def get_listings(
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
 
-from fastapi import FastAPI, UploadFile, File, HTTPException
-from pydantic import BaseModel
-import uvicorn
-import pandas as pd
-from datetime import datetime
-import json
-
-app = FastAPI()
-
-# Load commodity price data
-df = pd.read_csv('commodity_price.csv')
-
-class UserLogin(BaseModel):
-    username: str
-    password: str
-
-class FarmData(BaseModel):
-    name: str
-    state: str
-    latitude: float
-    longitude: float
-
-class MarketListing(BaseModel):
-    seller_name: str
-    crop_name: str
-    quantity: float
-    price_per_kg: float
-    location: str
-    state: str
-    contact_number: str
-
-@app.post("/login/")
-async def login(user: UserLogin):
-    # Simplified login for demo
-    return {"status": "success", "farmer_id": "12345"}
-
-@app.post("/signup/")
-async def signup(user: UserLogin):
-    return {"status": "success"}
-
-@app.post("/submit_farm_data/")
-async def submit_farm_data(data: FarmData):
-    return {"status": "success"}
-
-@app.post("/predict_crop/")
-async def predict_crop(data: dict):
-    # Mock crop suggestions
-    suggestions = [
-        {
-            "crop": "Rice",
-            "probability": "95%",
-            "season": "Kharif",
-            "price": {"min": 20, "max": 30, "trend": "rising"},
-            "current_weather": {"temperature": 28, "humidity": 75, "rainfall": 2.5}
-        }
-    ]
-    return {"crop_suggestions": suggestions}
-
-@app.post("/detect_disease/")
-async def detect_disease(file: UploadFile = File(...)):
-    return {"disease": "Leaf Blight", "treatment": "Apply fungicide"}
-
-@app.get("/marketplace/listings/")
-async def get_listings():
-    # Mock listings data
-    listings = [
-        {
-            "seller_name": "John Doe",
-            "crop_name": "Rice",
-            "quantity": 100,
-            "price_per_kg": 25,
-            "location": "Mumbai",
-            "state": "Maharashtra",
-            "contact_number": "1234567890"
-        }
-    ]
-    return {"listings": listings}
-
-@app.post("/marketplace/list/")
-async def create_listing(listing: MarketListing):
-    return {"status": "success"}
-
-@app.post("/chat/")
-async def chat(data: dict):
-    return {"reply": "How can I help you with farming today?"}
-
 if __name__ == "__main__":
-    uvicorn.run("main:app", host="0.0.0.0", port=8000, reload=True)
+    uvicorn.run(app, host="0.0.0.0", port=8000)

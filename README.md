@@ -1,184 +1,139 @@
-# KrishiAI - Smart Farming Assistant
+# Krishi-AI
 
-A comprehensive farming assistance platform that provides crop recommendations, disease detection, marketplace features, and an AI assistant for farmers.
+Krishi-AI is a prototype farming-assistance project with a Streamlit interface, a FastAPI service, and a bundled commodity-price CSV. It is not currently a production-ready agricultural recommendation or disease-diagnosis system.
 
-## Features
+Repository: <https://github.com/AarDew/Krishi-AI>
 
-- 🌾 Crop Recommendations based on location and conditions
-- 🔬 Plant Disease Detection
-- 💹 Agricultural Marketplace
-- 🤖 AI Farming Assistant
-- 📊 Detailed Crop Analysis
-- 🗓️ Crop Schedule Management
+## Current functionality and limitations
 
-## Project Structure
+- The Streamlit UI provides farmer and buyer views, a state map, commodity-price analysis, and forms that call the backend.
+- The frontend reads the bundled commodity-price data in `backend/commodity_price.csv`.
+- FastAPI exposes health, login/signup, farm-submission, crop, disease, marketplace, and chat endpoints.
+- Signup/login, farm submission, commodity data, and marketplace listings use the SQLite-backed API. The login token is still a demo token, and the marketplace seeds sample listings when empty. Crop recommendations and disease detection report that required model/data is unavailable rather than returning fabricated results.
+- No trained TensorFlow/Keras model or `crop_data.csv` is included. Disease detection and model-based crop recommendation are not implemented. Do not rely on demo responses for farming decisions.
+- Detailed weather and market trend views include simulated data; they are not verified forecasts or live market quotes.
+- Schedule generation and chat are exposed through FastAPI and require `GEMINI_API_KEY`; they call the external Gemini service. Their behavior has not been verified without a real API credential.
+- The project has not been deployed. There are no production URLs or screenshots yet.
 
+## Architecture
+
+```text
+Browser
+  |
+  v
+Streamlit UI (frontend/streamlit_run.py)
+  | HTTP requests (BACKEND_URL)
+  v
+FastAPI (backend/main.py)
+  |
+  +-- SQLite schema and commodity CSV initialization (backend/krishiai.db)
 ```
-hackathon/
-├── backend/
-│   ├── commodity_price.csv    # Commodity price dataset
-│   └── main.py               # FastAPI backend server
-├── frontend/
-│   └── streamlit_app.py      # Streamlit frontend application
-├── requirements.txt          # Python dependencies
-└── README.md                # Project documentation
+
+## Project layout
+
+```text
+backend/
+  commodity_price.csv
+  main.py
+  database.py
+  crop_advisor.py
+  models/
+frontend/
+  commodity_price.csv
+  streamlit_run.py
+backend/requirements.txt
+frontend/requirements.txt
+requirements.txt
 ```
 
-## Setup Instructions
+`backend/main.py` uses SQLAlchemy and `backend/krishiai.db`. `backend/database.py` is a separate SQLite helper for `users.db` and `crop_prices.db`; the FastAPI application does not currently import it.
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/yourusername/krishiai.git
-   cd krishiai
-   ```
+## Technologies
 
-2. Create and activate a virtual environment (recommended):
-   ```bash
-   python -m venv venv
-   # On Windows
-   .\venv\Scripts\activate
-   # On Unix or MacOS
-   source venv/bin/activate
-   ```
-
-3. Upgrade pip to the latest version:
-   ```bash
-   python -m pip install --upgrade pip
-   ```
-
-4. Install dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
-
-5. Start the backend server:
-   ```bash
-   cd backend
-   uvicorn main:app --reload
-   ```
-
-6. Start the frontend application:
-   ```bash
-   cd frontend
-   streamlit run streamlit_app.py
-   ```
-
-## Troubleshooting
-
-If you encounter installation errors:
-
-1. Make sure you have Python 3.8+ installed:
-   ```bash
-   python --version
-   ```
-
-2. Install packages in this specific order:
-   ```bash
-   pip install --upgrade pip
-   pip install wheel setuptools --upgrade
-   pip install --only-binary :all: Pillow==11.2.1
-   pip install -r requirements.txt
-   ```
-
-3. If you still face issues, try installing dependencies one by one:
-   ```bash
-   pip install numpy==1.21.2
-   pip install pandas==1.3.3
-   # Then install remaining packages
-   ```
-
-## Environment Requirements
-
-- Python 3.8+
-- FastAPI
+- Python 3.11
+- FastAPI and Uvicorn
 - Streamlit
-- Other dependencies listed in requirements.txt
+- SQLAlchemy and SQLite
+- Pandas, NumPy, Plotly, Folium, and Geopy
+- Google Gen AI client for optional Gemini-backed schedule generation and chat
 
-## Contributing
+## Local setup (Windows PowerShell)
 
-1. Fork the repository
-2. Create your feature branch
-3. Commit your changes
-4. Push to the branch
-5. Create a new Pull Request
+From the cloned repository directory:
 
-## License
+```powershell
+py -3.11 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-This project is licensed under the MIT License
-  
-## Data Structure
+The root requirements file installs both sets of dependencies. To install only one application:
 
-The dataset includes the following information:
-- State
-- District
-- Market
-- Commodity
-- Variety
-- Grade
-- Arrival Date
-- Minimum Price
-- Maximum Price
-- Modal Price
+```powershell
+python -m pip install -r backend\requirements.txt
+python -m pip install -r frontend\requirements.txt
+```
 
-## Installation Requirements
+Start the backend in one PowerShell window:
 
-1. Python 3.7 or higher
-2. Required Python packages:
-   ```bash
-   pip install pandas
-   pip install numpy
-   pip install matplotlib
-   pip install seaborn
-   ```
+```powershell
+$env:CORS_ORIGINS = "http://localhost:8501,http://127.0.0.1:8501"
+python -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+```
 
-## How to Use
+Start Streamlit in a second window:
 
-1. Clone the repository:
-   ```bash
-   git clone https://github.com/PratikGautam-dev/Hackphaisa
-   ```
+```powershell
+$env:BACKEND_URL = "http://127.0.0.1:8000"
+python -m streamlit run frontend\streamlit_run.py
+```
 
-2. Navigate to the project directory:
-   ```bash
-   cd agri-price-analysis
-   ```
+The backend defaults to `backend/krishiai.db`; it creates missing tables without deleting the database. Set `KRISHIAI_DB_PATH` to an absolute path to select another SQLite file. Set `CORS_ORIGINS` to a comma-separated list of allowed browser origins. Set `BACKEND_URL` in the frontend environment to the backend base URL.
 
-3. Run the analysis scripts:
-   ```bash
-   python analyze_prices.py
-   ```
+Optional API configuration is read from environment variables: `OPENWEATHER_API_KEY`, `GEMINI_API_KEY`, `AGRICULTURE_PRICE_API_URL`, and `AGRICULTURE_PRICE_API_KEY`. Gemini schedule/chat endpoints return HTTP 503 when `GEMINI_API_KEY` is absent. The OpenWeather and agricultural-price helpers are not connected to the active routes. The price helper sends its optional key as a Bearer token. Never commit credentials or a populated `.env` file.
 
-## Data Analysis Capabilities
+## API
 
-1. **Price Trends**
-   - Track commodity price variations over time
-   - Analyze seasonal price patterns
+With the backend running:
 
-2. **Market Analysis**
-   - Compare prices across different markets
-   - Identify price disparities between regions
+- Interactive API documentation: <http://127.0.0.1:8000/docs>
+- Health check: `GET /health`
+- Endpoints: `POST /login/`, `POST /signup/`, `POST /submit_farm_data/`, `POST /predict_crop/`, `POST /detailed_analysis/`, `POST /detect_disease/`, `POST /get_crop_schedule/`, `GET /get_farmers/`, `GET /commodity_prices/`, `GET /marketplace/listings/`, `POST /marketplace/list/`, and `POST /chat/`
 
-3. **Commodity Insights**
-   - Analyze variety-wise price differences
-   - Track grade-based price variations
+Signup/login and farm submission use SQLite, but login still returns a demo token. The marketplace stores listings in SQLite and inserts sample listings if the table is empty. Crop and disease endpoints return HTTP 503 until genuine model assets are supplied. Gemini endpoints need a valid key and have not been tested against the external service.
 
-## Contributing
+## Deployment
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+Not deployed. Backend and frontend production URLs are **not available**.
 
-## License
+### Render (FastAPI)
 
-This project is licensed under the MIT License - see the LICENSE.md file for details
+- Repository: `AarDew/Krishi-AI`
+- Branch: `main`
+- Root directory: `backend`
+- Build command: `pip install -r requirements.txt`
+- Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
+- Set `PYTHON_VERSION=3.11.0`.
+- Set `CORS_ORIGINS` to the exact Streamlit Community Cloud origin.
+- Mount a persistent disk at `/var/data` and set `KRISHIAI_DB_PATH=/var/data/krishiai.db`.
+- Set `GEMINI_API_KEY` only if schedule generation and chat are needed.
 
-## Acknowledgments
+### Streamlit Community Cloud
 
-- Ministry of Agriculture, Government of India
-- National Informatics Centre
-- Agricultural Market Information System
-- Ministry of Agriculture, Government of India
-- National Informatics Centre
-- Agricultural Market Information System
+- Repository: `AarDew/Krishi-AI`
+- Branch: `main`
+- Main file path: `frontend/streamlit_run.py`
+- Add this to the app's secrets after Render is deployed:
+
+  ```toml
+  BACKEND_URL = "https://<your-render-service>.onrender.com"
+  ```
+
+  Alternatively, set `BACKEND_URL` as an environment variable. Configure the Render `CORS_ORIGINS` value to the actual Streamlit app origin. Do not use placeholder URLs as deployment URLs.
+
+Before public submission, verify the deployed `/health` endpoint and exercise the frontend against the actual Render URL. Configure persistent SQLite storage for Render; the default service filesystem may be ephemeral. Crop and disease model assets remain absent, and the login token is not production authentication.
+
+## Screenshots
+
+No screenshots are currently included.

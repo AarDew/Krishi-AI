@@ -1,17 +1,16 @@
-import google.generativeai as genai
 import os
 import json
+from pathlib import Path
+from google import genai
 from dotenv import load_dotenv
 
-load_dotenv()
+load_dotenv(Path(__file__).resolve().parent.parent / ".env")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
-
-genai.configure(api_key=GEMINI_API_KEY)
-model = genai.GenerativeModel('gemini-2.0-flash')
+gemini_client = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
 def get_crop_schedule(crop_name: str, state: str, season: str):
     try:
-        if not GEMINI_API_KEY:
+        if gemini_client is None:
             raise ValueError("Missing GEMINI_API_KEY")
 
         prompt = f"""
@@ -22,7 +21,10 @@ def get_crop_schedule(crop_name: str, state: str, season: str):
         - category (soil_preparation/planting/irrigation/fertilizer/pest_management)
         """
         
-        response = model.generate_content(prompt)
+        response = gemini_client.models.generate_content(
+            model="gemini-2.0-flash",
+            contents=prompt,
+        )
         if not response.text:
             raise ValueError("No response from Gemini API")
             
@@ -43,20 +45,7 @@ def get_crop_schedule(crop_name: str, state: str, season: str):
                 "tasks": tasks
             }
         except json.JSONDecodeError:
-            # Fallback to basic task list
-            tasks = [
-                {
-                    "week_number": i,
-                    "task_description": f"Generic farming task for week {i}",
-                    "category": "general"
-                } for i in range(1, 13)
-            ]
-            return {
-                "crop": crop_name,
-                "state": state,
-                "season": season,
-                "tasks": tasks
-            }
+            raise ValueError("Gemini returned an invalid crop schedule")
 
     except Exception as e:
         print(f"Schedule generation error: {str(e)}")

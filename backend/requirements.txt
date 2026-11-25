@@ -1,0 +1,13 @@
+fastapi>=0.109,<1
+uvicorn[standard]>=0.27,<1
+pydantic>=2,<3
+SQLAlchemy>=2,<3
+bcrypt>=4,<6
+requests>=2.31
+pandas>=2.2
+numpy>=1.26
+plotly>=5.18
+python-dotenv>=1
+aiohttp>=3.9
+google-genai>=1,<2
+python-multipart>=0.0.9

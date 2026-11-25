@@ -21,8 +21,27 @@ INDIAN_STATES = [
     "Uttar Pradesh", "Uttarakhand", "West Bengal"
 ]
 
-BACKEND_URL = "http://127.0.0.1:8000"
-COMMODITY_FILE = os.path.join(os.path.dirname(__file__), '..', 'backend', 'commodity_price.csv')
+BACKEND_URL = os.getenv("BACKEND_URL")
+if not BACKEND_URL:
+    try:
+        BACKEND_URL = st.secrets["BACKEND_URL"]
+    except (FileNotFoundError, KeyError):
+        BACKEND_URL = "http://127.0.0.1:8000"
+BACKEND_URL = BACKEND_URL.rstrip("/")
+COMMODITY_FILE = os.path.abspath(
+    os.path.join(os.path.dirname(__file__), "..", "backend", "commodity_price.csv")
+)
+
+
+def api_error_message(response: requests.Response, fallback: str) -> str:
+    try:
+        body = response.json()
+    except ValueError:
+        return fallback
+    if isinstance(body, dict) and body.get("detail"):
+        return str(body["detail"])
+    return fallback
+
 
 # ------------------- SESSION STATE ------------------- #
 DEFAULTS = {
@@ -83,7 +102,7 @@ def show_detailed_analysis(crop, state_name, latitude, longitude):
         
         try:
             # Load local commodity price data
-            df = pd.read_csv('commodity_price.csv')
+            df = pd.read_csv(COMMODITY_FILE)
             df['Arrival_Date'] = pd.to_datetime(df['Arrival_Date'], format='%d/%m/%Y')
             
             # Make crop name matching more flexible
@@ -266,7 +285,7 @@ def display_crop_card(crop_data, state_name, latitude, longitude):
                     st.session_state.show_schedule = True
                     st.rerun()
                 else:
-                    st.error("Could not generate crop schedule. Please try again.")
+                    st.error(api_error_message(response, "Crop schedule generation is unavailable."))
 
 def show_schedule_page():
     schedule_info = st.session_state.schedule_data
@@ -420,7 +439,7 @@ else:
                                         display_crop_card(crop, state_name, latitude, longitude)
                                     st.write("---")
                             else:
-                                st.error("Could not get recommendations. Please try again.")
+                                st.error(api_error_message(response, "Crop recommendations are unavailable."))
                         except Exception as e:
                             st.error(f"Error: {str(e)}")
 
@@ -436,7 +455,7 @@ else:
                     st.success(f"🦠 {result['disease']} detected!")
                     st.write(f"Treatment: {result.get('treatment', 'N/A')}")
                 else:
-                    st.error("❌ Detection failed")
+                    st.error(api_error_message(resp, "Disease detection is unavailable."))
 
         # ------------------- MARKETPLACE ------------------- #
         with tabs[3]:
@@ -567,7 +586,7 @@ else:
                                 st.session_state.chat_messages.append({"role": "user", "content": user_input})
                                 st.session_state.chat_messages.append({"role": "assistant", "content": reply})
                             else:
-                                st.error("❌ Failed to get response from AI Assistant")
+                                st.error(api_error_message(resp, "AI assistant is unavailable."))
                         except Exception as e:
                             st.error(f"⚠️ Error: {str(e)}")
 
