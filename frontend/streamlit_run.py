@@ -391,7 +391,10 @@ else:
                 else:
                     payload = {"name": farmer_name, "state": state_name, "latitude": latitude, "longitude": longitude}
                     resp = requests.post(f"{BACKEND_URL}/submit_farm_data/", json=payload)
-                    st.success("Data submitted!") if resp.status_code == 200 else st.error("❌ Submission failed")
+                    if resp.status_code == 200:
+                        st.success("Data submitted!")
+                    else:
+                        st.error("❌ Submission failed")
 
         # ------------------- CROP RECOMMENDATIONS ------------------- #
         with tabs[1]:
