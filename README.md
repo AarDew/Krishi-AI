@@ -9,11 +9,14 @@ Repository: <https://github.com/AarDew/Krishi-AI>
 - The Streamlit UI provides farmer and buyer views, a state map, commodity-price analysis, and forms that call the backend.
 - The frontend reads the bundled commodity-price data in `backend/commodity_price.csv`.
 - FastAPI exposes health, login/signup, farm-submission, crop, disease, marketplace, and chat endpoints.
-- Signup/login, farm submission, commodity data, and marketplace listings use the SQLite-backed API. The login token is still a demo token, and the marketplace seeds sample listings when empty. Crop recommendations and disease detection report that required model/data is unavailable rather than returning fabricated results.
-- No trained TensorFlow/Keras model or `crop_data.csv` is included. Disease detection and model-based crop recommendation are not implemented. Do not rely on demo responses for farming decisions.
+- Signup/login, farm submission, commodity data, and marketplace listings use the SQLite-backed API. The login token is still a demo token, and the marketplace seeds sample listings when empty. Crop recommendations use the trained Random Forest in `backend/models/crop_recommendation_model.joblib`; disease detection remains unavailable because its model is not included.
+- The bundled crop classifier is not a substitute for agronomic advice. Disease detection is not implemented, and no `crop_data.csv` or trained disease model is included.
 - Detailed weather and market trend views include simulated data; they are not verified forecasts or live market quotes.
 - Schedule generation and chat are exposed through FastAPI and require `GEMINI_API_KEY`; they call the external Gemini service. Their behavior has not been verified without a real API credential.
-- The project has not been deployed. There are no production URLs or screenshots yet.
+- The project owner reports these existing deployment URLs; this local code change does not deploy or verify them:
+
+- Backend: <https://krishi-ai-backend-dd02.onrender.com>
+- Frontend: <https://krishi-ai-u95h8cakf5eipayejtsbx6.streamlit.app/>
 
 ## Architecture
 
@@ -27,6 +30,7 @@ Streamlit UI (frontend/streamlit_run.py)
 FastAPI (backend/main.py)
   |
   +-- SQLite schema and commodity CSV initialization (backend/krishiai.db)
+  +-- Trained crop classifier (backend/models/crop_recommendation_model.joblib)
 ```
 
 ## Project layout
@@ -99,13 +103,11 @@ With the backend running:
 
 - Interactive API documentation: <http://127.0.0.1:8000/docs>
 - Health check: `GET /health`
-- Endpoints: `POST /login/`, `POST /signup/`, `POST /submit_farm_data/`, `POST /predict_crop/`, `POST /detailed_analysis/`, `POST /detect_disease/`, `POST /get_crop_schedule/`, `GET /get_farmers/`, `GET /commodity_prices/`, `GET /marketplace/listings/`, `POST /marketplace/list/`, and `POST /chat/`
+- Endpoints: `POST /login/`, `POST /signup/`, `POST /submit_farm_data/`, `POST /recommend-crop`, `POST /predict_crop/` (legacy, unavailable), `POST /detailed_analysis/`, `POST /detect_disease/`, `POST /get_crop_schedule/`, `GET /get_farmers/`, `GET /commodity_prices/`, `GET /marketplace/listings/`, `POST /marketplace/list/`, and `POST /chat/`
 
-Signup/login and farm submission use SQLite, but login still returns a demo token. The marketplace stores listings in SQLite and inserts sample listings if the table is empty. Crop and disease endpoints return HTTP 503 until genuine model assets are supplied. Gemini endpoints need a valid key and have not been tested against the external service.
+Signup/login and farm submission use SQLite, but login still returns a demo token. The marketplace stores listings in SQLite and inserts sample listings if the table is empty. The `/recommend-crop` endpoint uses the bundled classifier; the legacy `/predict_crop/` and disease endpoint remain unavailable. Gemini endpoints need a valid key and have not been tested against the external service.
 
 ## Deployment
-
-Not deployed. Backend and frontend production URLs are **not available**.
 
 ### Render (FastAPI)
 
@@ -115,6 +117,7 @@ Not deployed. Backend and frontend production URLs are **not available**.
 - Build command: `pip install -r requirements.txt`
 - Start command: `uvicorn main:app --host 0.0.0.0 --port $PORT`
 - Set `PYTHON_VERSION=3.11.0`.
+- Keep `models/crop_recommendation_model.joblib` in the backend deployment. At 10.52 MiB, it is suitable to commit with the app and below GitHub's 100 MiB per-file limit. The model loader resolves it relative to `backend/main.py`; `scikit-learn` is pinned to the artifact's training version (1.6.1).
 - Set `CORS_ORIGINS` to the exact Streamlit Community Cloud origin.
 - Mount a persistent disk at `/var/data` and set `KRISHIAI_DB_PATH=/var/data/krishiai.db`.
 - Set `GEMINI_API_KEY` only if schedule generation and chat are needed.

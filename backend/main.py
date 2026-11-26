@@ -1,6 +1,6 @@
 from fastapi import FastAPI, Depends, HTTPException, status, File, UploadFile
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel, field_validator  # Updated import
+from pydantic import BaseModel, FiniteFloat, field_validator
 from sqlalchemy import create_engine, Column, String, Float
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, Session
@@ -12,6 +12,9 @@ import logging
 from pathlib import Path
 import pandas as pd
 import numpy as np
+import joblib
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.base import is_classifier
 from datetime import datetime, timedelta
 import plotly.express as px
 import plotly.graph_objects as go
@@ -27,10 +30,50 @@ PROJECT_DIR = Path(__file__).resolve().parent
 REPOSITORY_DIR = PROJECT_DIR.parent
 COMMODITY_DATA_PATH = PROJECT_DIR / "commodity_price.csv"
 CROP_DATA_PATH = PROJECT_DIR / "crop_data.csv"
+CROP_MODEL_PATH = PROJECT_DIR / "models" / "crop_recommendation_model.joblib"
+CROP_FEATURE_NAMES = ("n", "p", "k", "temperature", "humidity", "ph", "rainfall")
 load_dotenv(REPOSITORY_DIR / ".env")
 logger = logging.getLogger(__name__)
 AGRICULTURE_PRICE_API_URL = os.getenv("AGRICULTURE_PRICE_API_URL")
 AGRICULTURE_PRICE_API_KEY = os.getenv("AGRICULTURE_PRICE_API_KEY")
+
+
+def load_crop_recommendation_model():
+    artifact = joblib.load(CROP_MODEL_PATH)
+    if not isinstance(artifact, dict) or not {"model", "features"}.issubset(artifact):
+        raise ValueError("Expected a model artifact with 'model' and 'features' entries.")
+
+    model = artifact["model"]
+    if not isinstance(model, RandomForestClassifier) or not is_classifier(model):
+        raise ValueError("The saved crop model is not a RandomForestClassifier.")
+    if not hasattr(model, "estimators_"):
+        raise ValueError("The saved crop classifier has not been fitted.")
+
+    features = artifact["features"]
+    if isinstance(features, (str, bytes)):
+        raise ValueError("The saved crop feature names are invalid.")
+    feature_names = tuple(str(feature) for feature in features)
+    if (
+        len(feature_names) != len(CROP_FEATURE_NAMES)
+        or set(feature_names) != set(CROP_FEATURE_NAMES)
+        or len(set(feature_names)) != len(feature_names)
+    ):
+        raise ValueError("The saved crop feature names do not match the expected seven inputs.")
+    if getattr(model, "n_features_in_", None) != len(feature_names):
+        raise ValueError("The saved crop model does not accept the saved number of features.")
+
+    trained_features = getattr(model, "feature_names_in_", None)
+    if trained_features is not None and tuple(map(str, trained_features)) != feature_names:
+        raise ValueError("The saved feature order does not match the model's training order.")
+
+    return model, feature_names
+
+
+try:
+    CROP_MODEL, CROP_FEATURES = load_crop_recommendation_model()
+except Exception:
+    CROP_MODEL, CROP_FEATURES = None, None
+    logger.exception("Unable to load crop recommendation model from %s", CROP_MODEL_PATH)
 
 # Database setup
 DATABASE_PATH = Path(
@@ -184,6 +227,21 @@ class CropPredictionRequest(BaseModel):
 
 class CropPredictionResponse(BaseModel):
     crop_suggestions: list
+
+
+class CropRecommendationRequest(BaseModel):
+    N: FiniteFloat
+    P: FiniteFloat
+    K: FiniteFloat
+    temperature: FiniteFloat
+    humidity: FiniteFloat
+    ph: FiniteFloat
+    rainfall: FiniteFloat
+
+
+class CropRecommendationResponse(BaseModel):
+    recommended_crop: str
+
 
 class DetailedAnalysisRequest(BaseModel):
     crop_name: str
@@ -517,6 +575,41 @@ async def predict_crop(data: CropPredictionRequest):
         status_code=503,
         detail="Crop recommendations are unavailable because no crop dataset or trained model is installed.",
     )
+
+
+@app.post("/recommend-crop", response_model=CropRecommendationResponse)
+async def recommend_crop(data: CropRecommendationRequest):
+    if CROP_MODEL is None or CROP_FEATURES is None:
+        raise HTTPException(
+            status_code=503,
+            detail="The crop recommendation model is unavailable.",
+        )
+
+    feature_values = {
+        "n": data.N,
+        "p": data.P,
+        "k": data.K,
+        "temperature": data.temperature,
+        "humidity": data.humidity,
+        "ph": data.ph,
+        "rainfall": data.rainfall,
+    }
+    try:
+        inputs = pd.DataFrame(
+            [[feature_values[name] for name in CROP_FEATURES]],
+            columns=CROP_FEATURES,
+        )
+        prediction = CROP_MODEL.predict(inputs)
+        if len(prediction) != 1 or not str(prediction[0]).strip():
+            raise ValueError("The model returned an invalid crop prediction.")
+        return {"recommended_crop": str(prediction[0])}
+    except Exception as error:
+        logger.exception("Crop recommendation prediction failed")
+        raise HTTPException(
+            status_code=500,
+            detail="Crop recommendation failed.",
+        ) from error
+
 
 @app.post("/detailed_analysis/", response_model=DetailedAnalysisResponse)
 async def get_detailed_analysis(data: DetailedAnalysisRequest):

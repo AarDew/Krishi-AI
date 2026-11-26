@@ -417,34 +417,58 @@ else:
                                       cached_data["latitude"], cached_data["longitude"])
                     st.write("---")
                 else:
-                    selected_crop = st.selectbox("Select Crop (Optional)",
-                                                 ["", "Rice", "Wheat", "Cotton", "Lentil", "Mango",
-                                                  "Sugarcane", "Blackgram", "Maize", "Potato", "Tomato"])
+                    nutrient_columns = st.columns(3)
+                    nitrogen = nutrient_columns[0].number_input("Nitrogen (N)", value=90.0)
+                    phosphorus = nutrient_columns[1].number_input("Phosphorus (P)", value=42.0)
+                    potassium = nutrient_columns[2].number_input("Potassium (K)", value=43.0)
+
+                    climate_columns = st.columns(4)
+                    temperature = climate_columns[0].number_input("Temperature", value=25.0)
+                    humidity = climate_columns[1].number_input("Humidity", value=80.0)
+                    soil_ph = climate_columns[2].number_input("Soil pH", value=6.5)
+                    rainfall = climate_columns[3].number_input("Rainfall", value=200.0)
+
                     if st.button("🔍 Get Crop Recommendations"):
                         try:
-                            params = {
-                                "state": state_name,
-                                "latitude": latitude,
-                                "longitude": longitude,
-                                "temperature": 0,
-                                "humidity": 0,
-                                "rainfall": 0,
-                                "preferred_crop": selected_crop
-                            }
-                            response = requests.post(f"{BACKEND_URL}/predict_crop/", json=params)
-                            if response.status_code == 200:
-                                crops = response.json().get("crop_suggestions", [])
-                                if not crops:
-                                    st.warning("No suitable crops found for your region.")
+                            response = requests.post(
+                                f"{BACKEND_URL}/recommend-crop",
+                                json={
+                                    "N": nitrogen,
+                                    "P": phosphorus,
+                                    "K": potassium,
+                                    "temperature": temperature,
+                                    "humidity": humidity,
+                                    "ph": soil_ph,
+                                    "rainfall": rainfall,
+                                },
+                                timeout=(5, 30),
+                            )
+                            if response.ok:
+                                result = response.json()
+                                recommended_crop = (
+                                    result.get("recommended_crop")
+                                    if isinstance(result, dict)
+                                    else None
+                                )
+                                if isinstance(recommended_crop, str) and recommended_crop.strip():
+                                    st.success(f"🌾 Recommended crop: {recommended_crop}")
                                 else:
-                                    st.subheader("🌾 Recommended Crops for Your Region")
-                                    for crop in crops:
-                                        display_crop_card(crop, state_name, latitude, longitude)
-                                    st.write("---")
+                                    st.error("The backend returned an invalid crop recommendation.")
                             else:
-                                st.error(api_error_message(response, "Crop recommendations are unavailable."))
-                        except Exception as e:
-                            st.error(f"Error: {str(e)}")
+                                st.error(
+                                    api_error_message(
+                                        response,
+                                        "Crop recommendations are unavailable.",
+                                    )
+                                )
+                        except requests.Timeout:
+                            st.error("The crop recommendation request timed out. Please try again.")
+                        except requests.ConnectionError:
+                            st.error("Could not connect to the crop recommendation service.")
+                        except requests.RequestException as error:
+                            st.error(f"Crop recommendation request failed: {error}")
+                        except ValueError:
+                            st.error("The backend returned an invalid response.")
 
         # ------------------- DISEASE DETECTION ------------------- #
         with tabs[2]:
